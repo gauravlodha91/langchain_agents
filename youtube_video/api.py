@@ -23,7 +23,7 @@ api_keys = load_api_keys()
 cohere_api_key = api_keys["cohere_api_key"]
 
 # Initialize database and services
-collection = initialize_database(cohere_api_key)
+collection, client = initialize_database(cohere_api_key)  # Fixed: Unpacking the tuple
 processor = YouTubeTranscriptProcessor()
 chatbot = RAGChatbot(cohere_api_key, collection)
 
