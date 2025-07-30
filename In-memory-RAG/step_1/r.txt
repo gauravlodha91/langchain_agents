@@ -1,0 +1,50 @@
+What Is RAG?
+Large language models (LLMs) like chatbots can quickly translate languages, answer customer questions with humanlike responses, and even generate code. However, LLMs are only familiar with information they’ve encountered during training. To effectively address ever-evolving and specialized knowledge areas—such as deep knowledge about your business and customers—LLMs need exposure to the latest data. While retraining or fine-tuning is an option, the process can require additional time and cost. Even then, LLMs may generate incorrect responses.
+
+RAG, an increasingly popular AI framework, helps LLMs deliver more-accurate and -relevant AI responses. RAG supplements an LLM with data from an external knowledge base, ensuring LLMs can access the most-reliable and -current information. This additional data helps LLMs deliver up-to-date and contextually meaningful responses.
+
+In enterprise settings, RAG offers organizations a cost-effective approach to generative AI. Off-the-shelf LLMs, known as foundational LLMs, are trained to respond to a broad range of topics. However, they often need to be customized to an organization’s data before they can produce business-specific results. RAG allows organizations to inject their own data into LLMs without retraining or fine-tuning, lowering the barrier of entry to domain-specific, tangible use cases.
+
+For example, your organization could give employees access to a RAG-based chatbot to help boost productivity. To help plan your vacation, you could ask the chatbot how many vacation days you have available for the remainder of the year. The chatbot would search internal databases for relevant information, pulling your company’s vacation policy and how many vacation days you’ve already used to output how many days you can ask off work.
+
+A foundational LLM that hasn’t been trained on your organization’s records could not provide an answer—or, worse, may confidently provide the wrong answer. In order to equip the foundational model to effectively answer the question, you’d need to fine-tune it to your company’s data every time someone takes a vacation day.
+
+What are the Benefits of RAG?
+Integrating RAG into generative AI applications has a range of benefits.
+ 
+
+Cost-effective alternative to fine-tuning: In many cases, RAG can enable organizations to customize LLMs to their own domain and data at a fraction of the time and cost it takes to retrain or fine-tune models. This creates a shorter pathway to generative AI models that can deliver relevant and meaningful AI results to employees and customers.
+More reliable outcomes: Experts estimate that the world’s most popular LLMs generate incorrect outputs, or “hallucinate,” between 2 and 22 percent of the time.1 By providing LLMs with additional context from reliable knowledge sources, RAG helps improve LLM accuracy and reduce hallucinations. RAG can also provide source citations so users can fact-check answers and research topics further.
+Up-to-the-minute insights: Using RAG, businesses can continuously inject new data into models, ensuring LLMs stay up to date with rapidly changing topics. RAG-based models can even connect directly to sources such as websites and social media feeds to generate answers with near-real-time information.
+Enhanced data privacy: Because external knowledge bases can be stored locally or in private data centers, RAG doesn’t require organizations to share confidential data with third-party LLMs. Organizations can customize and deploy models while keeping their data secure.
+A visual representation of the benefits of using a RAG framework. All content is based on detailed information found in the article
+How Does RAG Work?
+A traditional LLM is trained on massive amounts of data from the internet, including articles, video transcripts, and chat forums. A RAG system adds a retrieval mechanism that cross-references information from a custom-built knowledge base before answering a prompt. The additional information strengthens the LLM’s training, resulting in an answer that better aligns with the user’s or the organization’s needs.
+
+The first step to enabling a RAG-based LLM solution is to build a knowledge base. This private collection of data can include a variety of text-based sources, such as the company handbook and product briefs. You will need to do some work to prepare your data for efficient processing, including cleaning up the data, such as removing duplicate information, and breaking the data into manageable chunks. Then, a specialized AI model called an embedding model converts the text into vectors—mathematical representations of the text—that capture context and relationships between words. Vectors are stored in a vector database for fast retrieval.
+
+When a user or subsystem submits a query, it is passed through the core component of the workflow, the retrieval mechanism. This mechanism searches the vector database for relevant matches and shares the most relevant data with the LLM as additional context.
+
+The LLM then combines its training with the external data to generate a final response, ensuring the user receives a contextually accurate and meaningful answer.
+
+Dive deeper into these steps by reading our article on how to implement RAG.
+
+A visual representation of content found in the “How does RAG work?” section of the article
+How Are People Using RAG?
+Organizations across industries are using RAG to drive employee productivity, deliver personalized experiences, and reduce operational costs.
+
+Here are a few examples of how RAG is transforming industries.
+
+ 
+
+Personalized shopping experiences: RAG-based retail recommendation systems can collect real-time customer preferences and market trends from sources such as search engines and X (formerly Twitter). This enables retailers to provide up-to-the-minute, personalized product recommendations to each shopper. Read more.
+Predictive manufacturing maintenance: By tapping into historical performance data, equipment-specific data, and live sensor data, RAG-based anomaly detection systems can catch equipment irregularities at the earliest signs of trouble, allowing manufacturers to address potential issues before they lead to downtime. In-depth knowledge of complex machinery enables RAG systems to detect subtle changes in equipment speed and precision that are often missed by traditional systems. Read more.
+Financial services AI assistants: RAG-based chatbots can synthesize a complex web of real-time market trends and regulations and provide users with timely, customized, and actionable financial advice. These powerful AI assistants help financial institutions deliver customized advice across a large customer base while complying with ever-evolving regulations. Read more.
+Take the Next Step in Your RAG Journey
+As you seek to capture the value and opportunity of generative AI and LLMs, RAG can offer a shorter pathway to customized LLM applications than fine-tuning. Learn more about the RAG pipeline, and explore tools that can streamline implementation.
+
+Building Blocks of RAG with Intel: Read more about key components of the RAG pipeline.
+
+How to Implement RAG: Get Intel® hardware and software recommendations across the RAG pipeline.
+
+Intel Tiber™ AI Cloud: Test important aspects of the RAG pipeline on Intel® hardware and software.
