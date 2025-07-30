@@ -2,3 +2,4 @@ youtube_video/.env
 Self\startGreat\.env
 *.pyc
 */__pycache__
+.logs
