@@ -214,12 +214,21 @@ class CourseRecommendationSystem:
             
         course_texts = []
         for course in self.courses:
-            # Combine title, description, and tags for embedding
-            text = f"{course['title']} {course['description']} {' '.join(course['tags'])}"
+            # Create more comprehensive text representation
+            text = (
+                f"Title: {course['title']} "
+                f"Description: {course['description']} "
+                f"Level: {course['skill_level']} "
+                f"Tags: {' '.join(course['tags'])} "
+                f"Provider: {course['provider']}"
+            )
             course_texts.append(text)
         
         try:
-            self.course_embeddings = self.model.encode(course_texts)
+            # Normalize embeddings
+            embeddings = self.model.encode(course_texts)
+            # L2 normalization
+            self.course_embeddings = embeddings / np.linalg.norm(embeddings, axis=1)[:, np.newaxis]
         except Exception as e:
             st.error(f"Error computing course embeddings: {e}")
             self.course_embeddings = None
@@ -243,41 +252,83 @@ class CourseRecommendationSystem:
     
     def get_recommendations(self, background: str, interests: str, goals: str, skills: str = "", 
                           filters: Dict = None, top_k: int = 5) -> List[Dict]:
-        """Get course recommendations based on user profile with optional filters"""
+        """Get course recommendations using hybrid approach (semantic + keyword)"""
         
-        if not self.model or self.course_embeddings is None:
-            # Fallback to tag-based matching if embeddings fail
-            return self._get_tag_based_recommendations(background, interests, goals, skills, filters, top_k)
+        # Get both semantic and keyword-based recommendations
+        semantic_recommendations = self._get_semantic_recommendations(
+            background, interests, goals, skills, filters, top_k
+        ) if self.model and self.course_embeddings is not None else []
         
-        # Create user embedding
-        user_embedding = self.create_user_profile_embedding(background, interests, goals, skills)
-        if user_embedding is None:
-            return self._get_tag_based_recommendations(background, interests, goals, skills, filters, top_k)
+        keyword_recommendations = self._get_tag_based_recommendations(
+            background, interests, goals, skills, filters, top_k
+        )
         
-        # Calculate similarities
-        similarities = cosine_similarity(user_embedding, self.course_embeddings).flatten()
+        # Combine recommendations with weighted scores
+        combined_recommendations = {}
         
-        # Apply user preferences from database
-        user_profile_hash = self.get_user_profile_hash(background, interests, goals, skills)
-        preferences = self.db_manager.get_user_preferences(user_profile_hash)
-        similarities = self._apply_preference_adjustments(similarities, preferences)
+        # Add semantic recommendations with 0.7 weight
+        for course in semantic_recommendations:
+            course_id = course['id']
+            combined_recommendations[course_id] = {
+                **course,
+                'similarity_score': course['similarity_score'] * 0.7
+            }
         
-        # Apply filters if provided
-        filtered_courses = self._apply_filters(self.courses, filters)
-        filtered_indices = [i for i, course in enumerate(self.courses) if course in filtered_courses]
+        # Add keyword recommendations with 0.3 weight
+        for course in keyword_recommendations:
+            course_id = course['id']
+            if course_id in combined_recommendations:
+                # If course exists in both, take weighted average
+                combined_recommendations[course_id]['similarity_score'] += (
+                    course['similarity_score'] * 0.3
+                )
+            else:
+                course['similarity_score'] *= 0.3
+                combined_recommendations[course_id] = course
         
-        # Get top recommendations from filtered courses
-        filtered_similarities = [(similarities[i], i) for i in filtered_indices]
-        filtered_similarities.sort(reverse=True)
+        # Convert to list and sort by final score
+        final_recommendations = list(combined_recommendations.values())
+        final_recommendations.sort(key=lambda x: x['similarity_score'], reverse=True)
         
-        recommendations = []
-        for sim_score, idx in filtered_similarities[:top_k]:
-            course = self.courses[idx].copy()
-            course['similarity_score'] = float(sim_score)
-            course['recommendation_reason'] = self._get_recommendation_reason(course, background, interests, goals)
-            recommendations.append(course)
+        return final_recommendations[:top_k]
+
+    def _get_semantic_recommendations(self, background: str, interests: str, goals: str, 
+                                   skills: str = "", filters: Dict = None, top_k: int = 5):
+        """Get recommendations using semantic similarity"""
+        profile_text = (
+            f"Background: {background} "
+            f"Interests: {interests} "
+            f"Goals: {goals} "
+            f"Skills: {skills}"
+        )
         
-        return recommendations
+        try:
+            # Create and normalize user embedding
+            user_embedding = self.model.encode([profile_text])
+            user_embedding = user_embedding / np.linalg.norm(user_embedding)
+            
+            # Calculate similarities
+            similarities = cosine_similarity(user_embedding, self.course_embeddings).flatten()
+            
+            # Create scored courses with semantic similarity
+            scored_courses = [
+                {
+                    **course,
+                    'similarity_score': float(score),
+                    'recommendation_reason': f"Semantic match score: {score:.2f}"
+                }
+                for course, score in zip(self.courses, similarities)
+            ]
+            
+            # Apply filters if any
+            if filters:
+                scored_courses = self._apply_filters(scored_courses, filters)
+            
+            return scored_courses
+            
+        except Exception as e:
+            st.error(f"Error in semantic recommendation: {e}")
+            return []
     
     def _get_tag_based_recommendations(self, background: str, interests: str, goals: str, 
                                      skills: str = "", filters: Dict = None, top_k: int = 5) -> List[Dict]:
@@ -496,6 +547,21 @@ Answer:"""
         except Exception as e:
             return f"Error generating response: {str(e)}. Please check your Cohere API key and try again."
 
+    def _add_recommendation_metadata(self, course: Dict, semantic_score: float, 
+                                   keyword_score: float) -> Dict:
+        """Add explanation of how the recommendation was made"""
+        course = course.copy()
+        course['recommendation_source'] = {
+            'semantic_score': semantic_score,
+            'keyword_score': keyword_score,
+            'final_score': course['similarity_score']
+        }
+        course['recommendation_reason'] = (
+            f"Semantic relevance: {semantic_score:.2f}, "
+            f"Keyword relevance: {keyword_score:.2f}"
+        )
+        return course
+
 # Streamlit UI
 def main():
     st.set_page_config(page_title="AI Course Recommendation System", page_icon="🎓", layout="wide")
@@ -639,6 +705,12 @@ def main():
                         st.write(f"**Match Score:** {course['similarity_score']:.3f}")
                         if 'recommendation_reason' in course:
                             st.write(f"**Why recommended:** {course['recommendation_reason']}")
+                        
+                        if 'recommendation_source' in course:
+                            st.write("**Recommendation Details:**")
+                            st.write(f"- Semantic match: {course['recommendation_source']['semantic_score']:.2f}")
+                            st.write(f"- Keyword match: {course['recommendation_source']['keyword_score']:.2f}")
+                            st.write(f"- Final score: {course['recommendation_source']['final_score']:.2f}")
                     
                     st.write("**Description:**")
                     st.write(course['description'])
