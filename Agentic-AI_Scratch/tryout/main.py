@@ -5,109 +5,51 @@ import streamlit as st
 from typing import List, Dict, Any
 import pandas as pd
 from datetime import datetime
+import os
+from langchain.llms import Cohere
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+from dotenv import load_dotenv
+load_dotenv() 
 
-# Course Dataset
+
+# Course Dataset (30+ courses as required)
 COURSES = [
-    {
-        "id": 1,
-        "title": "Machine Learning Specialization",
-        "provider": "Coursera",
-        "description": "Learn machine learning fundamentals including supervised learning, unsupervised learning, and neural networks. Covers linear regression, logistic regression, decision trees, and deep learning basics.",
-        "skill_level": "intermediate",
-        "tags": ["machine-learning", "python", "data-science", "neural-networks"],
-        "duration": "6 months",
-        "rating": 4.8
-    },
-    {
-        "id": 2,
-        "title": "Python for Data Science and Machine Learning",
-        "provider": "Udemy",
-        "description": "Complete Python programming course for data science. Learn pandas, numpy, matplotlib, seaborn, scikit-learn, and machine learning algorithms.",
-        "skill_level": "beginner",
-        "tags": ["python", "data-science", "pandas", "numpy", "beginner"],
-        "duration": "3 months",
-        "rating": 4.6
-    },
-    {
-        "id": 3,
-        "title": "Deep Learning Specialization",
-        "provider": "Coursera",
-        "description": "Advanced deep learning course covering neural networks, CNNs, RNNs, LSTMs, and transformer models. Includes practical projects with TensorFlow.",
-        "skill_level": "advanced",
-        "tags": ["deep-learning", "tensorflow", "cnn", "rnn", "advanced"],
-        "duration": "4 months",
-        "rating": 4.9
-    },
-    {
-        "id": 4,
-        "title": "Data Structures and Algorithms",
-        "provider": "edX",
-        "description": "Comprehensive course on data structures and algorithms. Covers arrays, linked lists, trees, graphs, sorting, searching, and dynamic programming.",
-        "skill_level": "intermediate",
-        "tags": ["algorithms", "data-structures", "programming", "problem-solving"],
-        "duration": "5 months",
-        "rating": 4.7
-    },
-    {
-        "id": 5,
-        "title": "Full Stack Web Development",
-        "provider": "Udemy",
-        "description": "Learn full stack web development with HTML, CSS, JavaScript, React, Node.js, Express, and MongoDB. Build complete web applications.",
-        "skill_level": "beginner",
-        "tags": ["web-development", "javascript", "react", "nodejs", "fullstack"],
-        "duration": "6 months",
-        "rating": 4.5
-    },
-    {
-        "id": 6,
-        "title": "AWS Cloud Practitioner",
-        "provider": "AWS",
-        "description": "Introduction to Amazon Web Services cloud computing. Learn AWS core services, security, pricing, and cloud architecture fundamentals.",
-        "skill_level": "beginner",
-        "tags": ["cloud", "aws", "devops", "infrastructure", "beginner"],
-        "duration": "2 months",
-        "rating": 4.4
-    },
-    {
-        "id": 7,
-        "title": "Natural Language Processing",
-        "provider": "Coursera",
-        "description": "Learn NLP techniques including text preprocessing, sentiment analysis, named entity recognition, and language models. Uses Python and NLTK.",
-        "skill_level": "intermediate",
-        "tags": ["nlp", "text-processing", "python", "nltk", "linguistics"],
-        "duration": "4 months",
-        "rating": 4.6
-    },
-    {
-        "id": 8,
-        "title": "Computer Vision Fundamentals",
-        "provider": "edX",
-        "description": "Introduction to computer vision concepts including image processing, feature detection, object recognition, and deep learning for vision.",
-        "skill_level": "intermediate",
-        "tags": ["computer-vision", "image-processing", "opencv", "deep-learning"],
-        "duration": "3 months",
-        "rating": 4.5
-    },
-    {
-        "id": 9,
-        "title": "SQL for Data Analysis",
-        "provider": "Udemy",
-        "description": "Master SQL for data analysis. Learn queries, joins, aggregations, window functions, and database design for data science applications.",
-        "skill_level": "beginner",
-        "tags": ["sql", "database", "data-analysis", "queries", "beginner"],
-        "duration": "2 months",
-        "rating": 4.7
-    },
-    {
-        "id": 10,
-        "title": "DevOps Engineering",
-        "provider": "Coursera",
-        "description": "Learn DevOps practices including CI/CD, containerization with Docker, Kubernetes, infrastructure as code, and monitoring.",
-        "skill_level": "intermediate",
-        "tags": ["devops", "docker", "kubernetes", "ci-cd", "automation"],
-        "duration": "5 months",
-        "rating": 4.6
-    }
+    {"id": 1, "title": "Machine Learning Specialization", "provider": "Coursera", "description": "Learn machine learning fundamentals including supervised learning, unsupervised learning, and neural networks. Covers linear regression, logistic regression, decision trees, and deep learning basics.", "skill_level": "intermediate", "tags": ["machine-learning", "python", "data-science", "neural-networks"], "duration": "6 months", "rating": 4.8},
+    {"id": 2, "title": "Python for Data Science and Machine Learning", "provider": "Udemy", "description": "Complete Python programming course for data science. Learn pandas, numpy, matplotlib, seaborn, scikit-learn, and machine learning algorithms.", "skill_level": "beginner", "tags": ["python", "data-science", "pandas", "numpy", "beginner"], "duration": "3 months", "rating": 4.6},
+    {"id": 3, "title": "Deep Learning Specialization", "provider": "Coursera", "description": "Advanced deep learning course covering neural networks, CNNs, RNNs, LSTMs, and transformer models. Includes practical projects with TensorFlow.", "skill_level": "advanced", "tags": ["deep-learning", "tensorflow", "cnn", "rnn", "advanced"], "duration": "4 months", "rating": 4.9},
+    {"id": 4, "title": "Data Structures and Algorithms", "provider": "edX", "description": "Comprehensive course on data structures and algorithms. Covers arrays, linked lists, trees, graphs, sorting, searching, and dynamic programming.", "skill_level": "intermediate", "tags": ["algorithms", "data-structures", "programming", "problem-solving"], "duration": "5 months", "rating": 4.7},
+    {"id": 5, "title": "Full Stack Web Development", "provider": "Udemy", "description": "Learn full stack web development with HTML, CSS, JavaScript, React, Node.js, Express, and MongoDB. Build complete web applications.", "skill_level": "beginner", "tags": ["web-development", "javascript", "react", "nodejs", "fullstack"], "duration": "6 months", "rating": 4.5},
+    {"id": 6, "title": "AWS Cloud Practitioner", "provider": "AWS", "description": "Introduction to Amazon Web Services cloud computing. Learn AWS core services, security, pricing, and cloud architecture fundamentals.", "skill_level": "beginner", "tags": ["cloud", "aws", "devops", "infrastructure", "beginner"], "duration": "2 months", "rating": 4.4},
+    {"id": 7, "title": "Natural Language Processing", "provider": "Coursera", "description": "Learn NLP techniques including text preprocessing, sentiment analysis, named entity recognition, and language models. Uses Python and NLTK.", "skill_level": "intermediate", "tags": ["nlp", "text-processing", "python", "nltk", "linguistics"], "duration": "4 months", "rating": 4.6},
+    {"id": 8, "title": "Computer Vision Fundamentals", "provider": "edX", "description": "Introduction to computer vision concepts including image processing, feature detection, object recognition, and deep learning for vision.", "skill_level": "intermediate", "tags": ["computer-vision", "image-processing", "opencv", "deep-learning"], "duration": "3 months", "rating": 4.5},
+    {"id": 9, "title": "SQL for Data Analysis", "provider": "Udemy", "description": "Master SQL for data analysis. Learn queries, joins, aggregations, window functions, and database design for data science applications.", "skill_level": "beginner", "tags": ["sql", "database", "data-analysis", "queries", "beginner"], "duration": "2 months", "rating": 4.7},
+    {"id": 10, "title": "DevOps Engineering", "provider": "Coursera", "description": "Learn DevOps practices including CI/CD, containerization with Docker, Kubernetes, infrastructure as code, and monitoring.", "skill_level": "intermediate", "tags": ["devops", "docker", "kubernetes", "ci-cd", "automation"], "duration": "5 months", "rating": 4.6},
+    {"id": 11, "title": "React Native Mobile Development", "provider": "Udemy", "description": "Build iOS and Android apps using React Native. Learn navigation, state management, API integration, and app deployment.", "skill_level": "intermediate", "tags": ["react-native", "mobile-development", "javascript", "ios", "android"], "duration": "4 months", "rating": 4.3},
+    {"id": 12, "title": "Cybersecurity Fundamentals", "provider": "Coursera", "description": "Introduction to cybersecurity concepts including network security, cryptography, risk assessment, and security frameworks.", "skill_level": "beginner", "tags": ["cybersecurity", "networking", "cryptography", "security", "beginner"], "duration": "3 months", "rating": 4.5},
+    {"id": 13, "title": "Blockchain Development", "provider": "Udemy", "description": "Learn blockchain technology and smart contract development using Ethereum, Solidity, and Web3.js.", "skill_level": "intermediate", "tags": ["blockchain", "ethereum", "solidity", "web3", "cryptocurrency"], "duration": "5 months", "rating": 4.4},
+    {"id": 14, "title": "UI/UX Design Masterclass", "provider": "Coursera", "description": "Comprehensive UI/UX design course covering user research, wireframing, prototyping, and design systems using Figma.", "skill_level": "beginner", "tags": ["ui-ux", "design", "figma", "prototyping", "user-research"], "duration": "4 months", "rating": 4.7},
+    {"id": 15, "title": "Android App Development with Kotlin", "provider": "Google", "description": "Learn Android development using Kotlin. Covers activities, fragments, databases, API integration, and Material Design.", "skill_level": "intermediate", "tags": ["android", "kotlin", "mobile-development", "material-design"], "duration": "6 months", "rating": 4.6},
+    {"id": 16, "title": "iOS Development with Swift", "provider": "Apple", "description": "Build iOS applications using Swift and SwiftUI. Learn iOS frameworks, app architecture, and App Store deployment.", "skill_level": "intermediate", "tags": ["ios", "swift", "swiftui", "mobile-development", "xcode"], "duration": "6 months", "rating": 4.8},
+    {"id": 17, "title": "Google Cloud Platform Fundamentals", "provider": "Google", "description": "Introduction to GCP services including Compute Engine, Cloud Storage, BigQuery, and Kubernetes Engine.", "skill_level": "beginner", "tags": ["gcp", "cloud", "kubernetes", "bigquery", "infrastructure"], "duration": "3 months", "rating": 4.5},
+    {"id": 18, "title": "Data Engineering with Apache Spark", "provider": "edX", "description": "Learn big data processing with Apache Spark. Covers RDDs, DataFrames, Spark SQL, and streaming data processing.", "skill_level": "advanced", "tags": ["spark", "big-data", "data-engineering", "scala", "streaming"], "duration": "4 months", "rating": 4.7},
+    {"id": 19, "title": "Digital Marketing Analytics", "provider": "Coursera", "description": "Learn digital marketing analytics using Google Analytics, social media metrics, and marketing attribution models.", "skill_level": "beginner", "tags": ["marketing", "analytics", "google-analytics", "social-media", "business"], "duration": "3 months", "rating": 4.4},
+    {"id": 20, "title": "Java Programming Masterclass", "provider": "Udemy", "description": "Complete Java programming course covering OOP, collections, multithreading, and enterprise Java development.", "skill_level": "beginner", "tags": ["java", "programming", "oop", "multithreading", "enterprise"], "duration": "8 months", "rating": 4.6},
+    {"id": 21, "title": "Game Development with Unity", "provider": "Unity", "description": "Learn game development using Unity engine. Covers 2D/3D games, physics, animations, and mobile game development.", "skill_level": "intermediate", "tags": ["unity", "game-development", "c-sharp", "3d", "mobile-games"], "duration": "5 months", "rating": 4.5},
+    {"id": 22, "title": "Kubernetes Administration", "provider": "Linux Foundation", "description": "Learn Kubernetes container orchestration. Covers cluster management, networking, storage, and security.", "skill_level": "advanced", "tags": ["kubernetes", "containers", "devops", "orchestration", "docker"], "duration": "4 months", "rating": 4.8},
+    {"id": 23, "title": "Python Web Development with Django", "provider": "Udemy", "description": "Build web applications using Django framework. Covers models, views, templates, authentication, and deployment.", "skill_level": "intermediate", "tags": ["django", "python", "web-development", "backend", "mvc"], "duration": "5 months", "rating": 4.7},
+    {"id": 24, "title": "Business Intelligence with Power BI", "provider": "Microsoft", "description": "Learn business intelligence and data visualization using Microsoft Power BI. Create dashboards and reports.", "skill_level": "beginner", "tags": ["power-bi", "business-intelligence", "data-visualization", "microsoft", "dashboards"], "duration": "3 months", "rating": 4.4},
+    {"id": 25, "title": "Artificial Intelligence Ethics", "provider": "edX", "description": "Explore ethical considerations in AI development including bias, fairness, transparency, and responsible AI practices.", "skill_level": "intermediate", "tags": ["ai-ethics", "responsible-ai", "bias", "fairness", "philosophy"], "duration": "2 months", "rating": 4.6},
+    {"id": 26, "title": "Salesforce Administration", "provider": "Salesforce", "description": "Learn Salesforce platform administration including user management, workflows, reports, and customization.", "skill_level": "beginner", "tags": ["salesforce", "crm", "administration", "workflows", "business"], "duration": "4 months", "rating": 4.5},
+    {"id": 27, "title": "C++ Programming for Competitive Programming", "provider": "Coursera", "description": "Master C++ for competitive programming. Covers STL, algorithms, data structures, and optimization techniques.", "skill_level": "advanced", "tags": ["cpp", "competitive-programming", "algorithms", "stl", "optimization"], "duration": "6 months", "rating": 4.8},
+    {"id": 28, "title": "Tableau Data Visualization", "provider": "Tableau", "description": "Create interactive data visualizations and dashboards using Tableau. Learn advanced charting and storytelling with data.", "skill_level": "intermediate", "tags": ["tableau", "data-visualization", "dashboards", "business-intelligence", "analytics"], "duration": "3 months", "rating": 4.6},
+    {"id": 29, "title": "Microsoft Azure Fundamentals", "provider": "Microsoft", "description": "Introduction to Microsoft Azure cloud services including virtual machines, storage, networking, and security.", "skill_level": "beginner", "tags": ["azure", "cloud", "microsoft", "virtual-machines", "security"], "duration": "2 months", "rating": 4.5},
+    {"id": 30, "title": "Network Security and Penetration Testing", "provider": "Udemy", "description": "Learn ethical hacking and penetration testing techniques. Covers vulnerability assessment and security tools.", "skill_level": "advanced", "tags": ["penetration-testing", "ethical-hacking", "network-security", "vulnerability", "kali-linux"], "duration": "6 months", "rating": 4.7},
+    {"id": 31, "title": "MongoDB Database Development", "provider": "MongoDB", "description": "Learn NoSQL database development with MongoDB. Covers document modeling, queries, indexing, and aggregation.", "skill_level": "intermediate", "tags": ["mongodb", "nosql", "database", "aggregation", "indexing"], "duration": "3 months", "rating": 4.4},
+    {"id": 32, "title": "Rust Programming Language", "provider": "Rust Foundation", "description": "Learn systems programming with Rust. Covers memory safety, concurrency, and performance optimization.", "skill_level": "advanced", "tags": ["rust", "systems-programming", "memory-safety", "concurrency", "performance"], "duration": "5 months", "rating": 4.8},
+    {"id": 33, "title": "Vue.js Frontend Development", "provider": "Vue", "description": "Build modern web applications using Vue.js framework. Covers components, routing, state management, and testing.", "skill_level": "intermediate", "tags": ["vuejs", "frontend", "javascript", "spa", "components"], "duration": "4 months", "rating": 4.6},
+    {"id": 34, "title": "TensorFlow for Deep Learning", "provider": "TensorFlow", "description": "Deep learning with TensorFlow. Covers neural networks, CNN, RNN, transfer learning, and model deployment.", "skill_level": "advanced", "tags": ["tensorflow", "deep-learning", "neural-networks", "cnn", "transfer-learning"], "duration": "5 months", "rating": 4.9},
+    {"id": 35, "title": "Go Programming Language", "provider": "Google", "description": "Learn Go programming for backend development and microservices. Covers concurrency, web services, and cloud development.", "skill_level": "intermediate", "tags": ["golang", "backend", "microservices", "concurrency", "cloud"], "duration": "4 months", "rating": 4.7}
 ]
 
 class CourseRecommendationSystem:
@@ -206,51 +148,37 @@ class CourseRecommendationSystem:
                     self.user_preferences[user_profile]['disliked_tags'].append(tag)
     
     def answer_learning_question(self, question: str, user_profile: str = "") -> str:
-        """Simple rule-based Q&A for learning path questions"""
-        question_lower = question.lower()
+        """
+        LLM-powered Q&A using Langchain with Cohere
+        """
+        # Initialize Cohere LLM
+        llm = Cohere(
+            cohere_api_key=os.getenv("COHERE_API_KEY"),
+            temperature=0.7,
+            model="command-nightly"
+        )
         
-        # Simple knowledge base responses
-        if "python" in question_lower and "data science" in question_lower:
-            return """For data science, Python is generally recommended over R because:
-            1. More versatile and general-purpose
-            2. Better for machine learning (scikit-learn, TensorFlow)
-            3. Stronger ecosystem and community
-            4. Better for deployment and production systems
-            
-            Recommended learning path: Start with Python basics → pandas/numpy → matplotlib → scikit-learn → advanced ML libraries"""
+        # Create prompt template
+        template = """You are an expert education advisor. Given the following question about learning paths and career development, provide a helpful and structured response.
+
+        Question: {question}
+
+        User Profile: {profile}
+
+        Please provide a clear, step-by-step answer with practical recommendations and explanations."""
+
+        prompt = PromptTemplate(
+            input_variables=["question", "profile"],
+            template=template
+        )
+
+        # Create chain
+        chain = LLMChain(llm=llm, prompt=prompt)
+
+        # Get response
+        response = chain.run(question=question, profile=user_profile)
         
-        elif "ml engineer" in question_lower or "machine learning engineer" in question_lower:
-            return """Steps to become an ML Engineer:
-            1. Master programming (Python/SQL)
-            2. Learn statistics and linear algebra
-            3. Understand ML algorithms and frameworks
-            4. Practice with real datasets and projects
-            5. Learn MLOps (deployment, monitoring, CI/CD)
-            6. Build a portfolio with end-to-end projects
-            7. Gain experience with cloud platforms (AWS/GCP/Azure)"""
-        
-        elif "data scientist" in question_lower:
-            return """Data Science learning path:
-            1. Statistics and probability fundamentals
-            2. Programming (Python/R and SQL)
-            3. Data manipulation (pandas, numpy)
-            4. Visualization (matplotlib, seaborn)
-            5. Machine learning algorithms
-            6. Domain expertise in your area of interest
-            7. Communication and storytelling skills"""
-        
-        elif "web development" in question_lower:
-            return """Web Development learning path:
-            1. HTML/CSS fundamentals
-            2. JavaScript programming
-            3. Frontend framework (React/Vue/Angular)
-            4. Backend development (Node.js/Python/Java)
-            5. Database management (SQL/NoSQL)
-            6. Version control (Git)
-            7. Deployment and DevOps basics"""
-        
-        else:
-            return f"I'd be happy to help with your learning path question: '{question}'. Could you be more specific about the technology or career path you're interested in? I can provide guidance on data science, machine learning, web development, and more."
+        return response
 
 # Streamlit UI
 def main():
