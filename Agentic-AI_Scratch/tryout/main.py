@@ -1,6 +1,5 @@
 import json
 import numpy as np
-from sentence_transformers import SentenceTransformer
 import streamlit as st
 from typing import List, Dict, Any
 import pandas as pd
@@ -10,8 +9,11 @@ from langchain.llms import Cohere
 from langchain.chains import LLMChain
 from langchain.prompts import PromptTemplate
 from dotenv import load_dotenv
-load_dotenv() 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import re
 
+load_dotenv()
 
 # Course Dataset (30+ courses as required)
 COURSES = [
@@ -54,29 +56,28 @@ COURSES = [
 
 class CourseRecommendationSystem:
     def __init__(self):
-        # Initialize sentence transformer model
-        self.model = SentenceTransformer('all-MiniLM-L6-v2')
         self.courses = COURSES
         self.user_feedback = {}  # Store user feedback
         self.user_preferences = {}  # Store learned preferences
         
-        # Pre-compute course embeddings
+        # Pre-compute course embeddings using TF-IDF
         self._compute_course_embeddings()
         
     def _compute_course_embeddings(self):
-        """Pre-compute embeddings for all courses"""
+        """Pre-compute TF-IDF vectors for all courses"""
         course_texts = []
         for course in self.courses:
             # Combine title, description, and tags for embedding
             text = f"{course['title']} {course['description']} {' '.join(course['tags'])}"
             course_texts.append(text)
         
-        self.course_embeddings = self.model.encode(course_texts)
+        self.vectorizer = TfidfVectorizer(stop_words='english', max_features=5000)
+        self.course_embeddings = self.vectorizer.fit_transform(course_texts)
     
     def create_user_profile_embedding(self, background: str, interests: str, goals: str, skills: str = ""):
-        """Create user profile embedding from input text"""
+        """Create user profile embedding using TF-IDF"""
         profile_text = f"Background: {background}. Interests: {interests}. Goals: {goals}. Skills: {skills}"
-        return self.model.encode([profile_text])[0]
+        return self.vectorizer.transform([profile_text])
     
     def get_recommendations(self, user_profile: str, top_k: int = 5) -> List[Dict]:
         """Get course recommendations based on user profile"""
@@ -91,7 +92,7 @@ class CourseRecommendationSystem:
         user_embedding = self.create_user_profile_embedding(background, interests, goals, skills)
         
         # Calculate similarities
-        similarities = np.dot(self.course_embeddings, user_embedding)
+        similarities = cosine_similarity(user_embedding, self.course_embeddings).flatten()
         
         # Apply feedback adjustments if available
         if user_profile in self.user_preferences:
@@ -151,34 +152,41 @@ class CourseRecommendationSystem:
         """
         LLM-powered Q&A using Langchain with Cohere
         """
+        # Check if API key is available
+        if not os.getenv("COHERE_API_KEY"):
+            return "Cohere API key not found. Please set the COHERE_API_KEY environment variable to use this feature."
+        
         # Initialize Cohere LLM
-        llm = Cohere(
-            cohere_api_key=os.getenv("COHERE_API_KEY"),
-            temperature=0.7,
-            model="command-nightly"
-        )
-        
-        # Create prompt template
-        template = """You are an expert education advisor. Given the following question about learning paths and career development, provide a helpful and structured response.
+        try:
+            llm = Cohere(
+                cohere_api_key=os.getenv("COHERE_API_KEY"),
+                temperature=0.7,
+                model="command"
+            )
+            
+            # Create prompt template
+            template = """You are an expert education advisor. Given the following question about learning paths and career development, provide a helpful and structured response.
 
-        Question: {question}
+            Question: {question}
 
-        User Profile: {profile}
+            User Profile: {profile}
 
-        Please provide a clear, step-by-step answer with practical recommendations and explanations."""
+            Please provide a clear, step-by-step answer with practical recommendations and explanations."""
 
-        prompt = PromptTemplate(
-            input_variables=["question", "profile"],
-            template=template
-        )
+            prompt = PromptTemplate(
+                input_variables=["question", "profile"],
+                template=template
+            )
 
-        # Create chain
-        chain = LLMChain(llm=llm, prompt=prompt)
+            # Create chain
+            chain = LLMChain(llm=llm, prompt=prompt)
 
-        # Get response
-        response = chain.run(question=question, profile=user_profile)
-        
-        return response
+            # Get response
+            response = chain.run(question=question, profile=user_profile)
+            
+            return response
+        except Exception as e:
+            return f"Error generating response: {str(e)}"
 
 # Streamlit UI
 def main():
@@ -226,7 +234,8 @@ def main():
                 st.session_state.user_profile_key = user_profile
                 
                 # Get recommendations
-                recommendations = st.session_state.recommender.get_recommendations(user_profile)
+                with st.spinner("Finding the best courses for you..."):
+                    recommendations = st.session_state.recommender.get_recommendations(user_profile)
                 st.session_state.current_recommendations = recommendations
                 st.success("Recommendations updated!")
             else:
@@ -251,10 +260,9 @@ def main():
                     st.write(course['description'])
                     
                     st.write("**Tags:**")
-                    tag_cols = st.columns(min(len(course['tags']), 4))
-                    for j, tag in enumerate(course['tags']):
-                        with tag_cols[j % 4]:
-                            st.badge(tag)
+                    # Display tags in a more compact way
+                    tags_html = " ".join([f"<span style='background-color: #f0f2f6; padding: 4px 8px; border-radius: 12px; margin: 4px; display: inline-block; font-size: 0.8em;'>{tag}</span>" for tag in course['tags']])
+                    st.markdown(tags_html, unsafe_allow_html=True)
                     
                     # Feedback buttons
                     feedback_col1, feedback_col2 = st.columns(2)
@@ -292,10 +300,11 @@ def main():
         
         if st.button("💬 Ask"):
             if question:
-                answer = st.session_state.recommender.answer_learning_question(
-                    question, 
-                    st.session_state.user_profile_key
-                )
+                with st.spinner("Thinking..."):
+                    answer = st.session_state.recommender.answer_learning_question(
+                        question, 
+                        st.session_state.user_profile_key
+                    )
                 st.write("**Answer:**")
                 st.write(answer)
             else:
@@ -312,16 +321,17 @@ def main():
         
         for eq in example_questions:
             if st.button(f"💡 {eq}", key=f"example_{hash(eq)}"):
-                answer = st.session_state.recommender.answer_learning_question(
-                    eq, 
-                    st.session_state.user_profile_key
-                )
+                with st.spinner("Thinking..."):
+                    answer = st.session_state.recommender.answer_learning_question(
+                        eq, 
+                        st.session_state.user_profile_key
+                    )
                 st.write("**Answer:**")
                 st.write(answer)
     
     # Footer
     st.markdown("---")
-    st.markdown("*Built with Streamlit and SentenceTransformers*")
+    st.markdown("*Built with Streamlit and TF-IDF*")
 
 if __name__ == "__main__":
     main()
