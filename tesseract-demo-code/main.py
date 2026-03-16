@@ -1,342 +1,460 @@
 """
-tesseract_converter.py
-PDF → Markdown  |  Tesseract (text/tables) + Ollama LLaVA (diagrams/images)
+PDF OCR Pipeline — PyMuPDF (fitz) + Tesseract
+==============================================
 
-Routing gate (per page):
-  PyMuPDF native text > 100 chars  → Tesseract  (fast, accurate for real text)
-  PyMuPDF native text ≤ 100 chars  → LLaVA      (vector diagrams + raster images)
+For each page:
+  - If native text exists  → extract text directly via fitz
+  - If scanned/image page  → run Tesseract OCR
 
-This catches BOTH:
-  - Raster images (photos, scanned charts)
-  - Vector drawings (mind maps, flow diagrams, boxes + arrows)
+Outputs:
+  - output.md   : clean readable Markdown
+  - output.json : structured data with text blocks + image metadata
 
 Install:
-    pip install pytesseract pymupdf opencv-python Pillow ollama
-    ollama pull llava      ← one-time, ~4 GB
-    ollama serve           ← keep running in a separate terminal
+    pip install pymupdf pytesseract pillow
+
+Tesseract must be installed locally:
+    Linux  : sudo apt install tesseract-ocr
+    macOS  : brew install tesseract
+    Windows: https://github.com/UB-Mannheim/tesseract/wiki
 """
 
-import re
-import base64
-import logging
-import time
+import os
+import io
+import json
+import argparse
 from pathlib import Path
+from typing import Optional
 
-import fitz
-import cv2
-import numpy as np
+import fitz                      # pip install pymupdf
 import pytesseract
-import ollama
+from pytesseract import Output
 from PIL import Image
 
 
-# ── Logging setup ─────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# 1. Tesseract path setup
+# ──────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger(__name__)
-
-
-def _hms(seconds: float) -> str:
-    """Format seconds as  Xm Ys  or  X.XXs  depending on magnitude."""
-    if seconds >= 60:
-        m, s = divmod(seconds, 60)
-        return f"{int(m)}m {s:.1f}s"
-    return f"{seconds:.2f}s"
-
-
-# ── Config ────────────────────────────────────────────────────────────────────
-
-DPI          = 300      # Render DPI. 300 = balanced. 150 = faster.
-LANG         = "eng"    # Tesseract language. "eng+hin" for multilingual.
-PSM          = 3        # Page Segmentation Mode. 3 = fully automatic.
-OEM          = 1        # OCR Engine. 1 = LSTM neural net (most accurate).
-OLLAMA_MODEL = "llava"  # Vision model. "llava:13b" for higher accuracy.
-
-# Pages whose PyMuPDF-extracted native text is shorter than this are treated
-# as diagrams/images and routed to LLaVA instead of Tesseract.
-# Raise this if diagram pages with some labels slip through to Tesseract.
-# Lower this if short-text pages (title pages, TOC) are wrongly sent to LLaVA.
-NATIVE_TEXT_THRESHOLD = 100   # characters
-
-# ── Tesseract binary (Windows) ────────────────────────────────────────────────
-# Run  `where tesseract`  in your terminal to get your exact path.
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-
-
-# ── PDF loading ───────────────────────────────────────────────────────────────
-
-def load_pdf(pdf_path: str):
+def setup_tesseract(path: Optional[str] = None) -> None:
     """
-    Open the PDF with PyMuPDF and return the fitz.Document object.
-    Kept separate so callers can iterate pages directly and access
-    both the rendered image AND the native text in one pass.
+    Point pytesseract at the local Tesseract binary.
+    Pass --tesseract-path explicitly, or set TESSERACT_CMD env var,
+    or let it auto-detect from common install locations.
     """
-    return fitz.open(pdf_path)
+    candidates = [
+        path,
+        os.environ.get("TESSERACT_CMD"),
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            pytesseract.pytesseract.tesseract_cmd = c
+            print(f"  Tesseract: {c}")
+            return
+    print("  Tesseract: using system PATH")
 
 
-# ── Page rendering ────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# 2. Page helpers
+# ──────────────────────────────────────────────
 
-def render_page(page: fitz.Page) -> np.ndarray:
+def page_to_pil(page: fitz.Page, dpi: int = 300) -> Image.Image:
+    """Render a PDF page to a PIL image at the given DPI."""
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    return Image.open(io.BytesIO(pix.tobytes("png")))
+
+
+def has_native_text(page: fitz.Page, min_chars: int = 50) -> bool:
     """
-    Rasterise a single fitz.Page to a BGR numpy array at the configured DPI.
-    fitz internal DPI is 72 — scale = DPI / 72 gives the correct zoom factor.
+    Return True only if the page has meaningful embedded text.
+    Threshold is 50 chars — low char counts usually mean
+    the page is a scanned image with just a few stray characters.
     """
-    mat = fitz.Matrix(DPI / 72, DPI / 72)
-    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
-    arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, 3)
-    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    return len(page.get_text("text").strip()) >= min_chars
 
 
-# ── Routing gate ──────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# 3. Native text extraction (fitz)
+# ──────────────────────────────────────────────
 
-def get_native_text(page: fitz.Page) -> str:
+def extract_native_text(page: fitz.Page) -> list[dict]:
     """
-    Extract selectable/native text directly from the PDF page structure
-    using PyMuPDF — no OCR involved, essentially instant.
-
-    This works for:
-      ✓ Digital PDFs with embedded text
-      ✓ Vector diagrams where text labels are PDF text objects
-
-    Returns empty string for:
-      ✗ Scanned/raster-only pages (no text objects in PDF structure)
-      ✗ Pages where text is part of an embedded image
+    Extract text blocks from the PDF's embedded text layer via fitz.
+    Uses 'dict' mode which preserves reading order per block.
     """
-    return page.get_text("text").strip()
+    results = []
+    # Use 'dict' (not 'rawdict') — more reliable line grouping
+    data = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
+
+    for block in data.get("blocks", []):
+        if block["type"] != 0:
+            continue
+
+        lines_text = []
+        for line in block.get("lines", []):
+            line_str = " ".join(
+                span["text"].strip()
+                for span in line.get("spans", [])
+                if span.get("text", "").strip()
+            )
+            if line_str:
+                lines_text.append(line_str)
+
+        if lines_text:
+            x0, y0, x1, y1 = block["bbox"]
+            results.append({
+                "type": "text",
+                "source": "native",
+                "text": "\n".join(lines_text),
+                "bbox": {"x0": round(x0, 1), "y0": round(y0, 1),
+                         "x1": round(x1, 1), "y1": round(y1, 1)},
+            })
+    return results
 
 
-def should_use_llava(native_text: str) -> bool:
+# ──────────────────────────────────────────────
+# 4. OCR text extraction (Tesseract)
+# ──────────────────────────────────────────────
+
+def extract_ocr_text(
+    page: fitz.Page,
+    dpi: int = 300,
+    lang: str = "eng",
+    oem: int = 3,
+    psm: int = 1,          # PSM 1 = auto with OSD — best for mixed-layout pages
+) -> list[dict]:
     """
-    Routing decision: True → LLaVA,  False → Tesseract.
+    Run Tesseract on the rendered page image.
 
-    Logic:
-      If PyMuPDF can extract meaningful text (> NATIVE_TEXT_THRESHOLD chars),
-      the page contains real readable text → Tesseract is fast and accurate.
+    PSM modes that work well:
+      1  = Auto page segmentation with OSD  ← best for most real docs
+      3  = Fully automatic (no OSD)
+      6  = Single uniform block of text
 
-      If native text is short or empty, the page is one of:
-        - A scanned page (no text layer)
-        - A vector diagram (boxes, arrows, mind maps)
-        - A raster image (chart, photo)
-      All of these are better handled by LLaVA's visual understanding.
+    Words are grouped into lines using Tesseract's own
+    block_num / par_num / line_num — this preserves reading order
+    correctly even for multi-column layouts.
     """
-    return len(native_text) <= NATIVE_TEXT_THRESHOLD
+    pil_img = page_to_pil(page, dpi=dpi)
+    scale = dpi / 72.0
+    config = f"--oem {oem} --psm {psm}"
 
-
-# ── Preprocessing  (Tesseract only) ──────────────────────────────────────────
-
-def preprocess(img: np.ndarray) -> np.ndarray:
-    """
-    grayscale → denoise → Otsu binarize.
-    Applied only before Tesseract — LLaVA always receives the original
-    full-colour image (colour matters for chart legends, bar colours, etc.)
-    """
-    gray  = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    gray  = cv2.fastNlMeansDenoising(gray, h=10)
-    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    return bw
-
-
-# ── Table detection ───────────────────────────────────────────────────────────
-
-def has_table(img: np.ndarray) -> bool:
-    """
-    Detect ruled tables via morphological line detection.
-    Looks for intersecting horizontal + vertical lines — both must be present.
-    """
-    _, bw = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    h, w  = bw.shape
-    h_lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (w // 20, 1)))
-    v_lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN,
-                cv2.getStructuringElement(cv2.MORPH_RECT, (1, h // 20)))
-    return h_lines.any() and v_lines.any()
-
-
-# ── Tesseract extraction ──────────────────────────────────────────────────────
-
-def extract_table(img: np.ndarray) -> str:
-    """PSM 6 OCR → split columns on 2+ spaces → Markdown pipe table."""
-    text  = pytesseract.image_to_string(
-        Image.fromarray(img), lang=LANG, config=f"--psm 6 --oem {OEM}"
-    )
-    lines = [l for l in text.splitlines() if l.strip()]
-    if not lines:
-        return ""
-    rows     = [re.split(r"\s{2,}", l.strip()) for l in lines]
-    max_cols = max(len(r) for r in rows)
-    rows     = [r + [""] * (max_cols - len(r)) for r in rows]
-    md  = "| " + " | ".join(rows[0]) + " |\n"
-    md += "| " + " | ".join(["---"] * max_cols) + " |\n"
-    for row in rows[1:]:
-        md += "| " + " | ".join(row) + " |\n"
-    return md
-
-
-def extract_text(img: np.ndarray) -> str:
-    """PSM 3 OCR → basic Markdown (headings + bullets)."""
-    text = pytesseract.image_to_string(
-        Image.fromarray(img), lang=LANG, config=f"--psm {PSM} --oem {OEM}"
-    )
-    md = []
-    for line in text.splitlines():
-        line = line.strip()
-        if not line:
-            md.append("")
-        elif re.match(r"^[A-Z][A-Z\s]{4,50}$", line):
-            md.append(f"## {line.title()}")
-        elif re.match(r"^[•·▪\-\*]\s", line):
-            md.append(f"- {line[2:].strip()}")
-        else:
-            md.append(line)
-    return "\n".join(md)
-
-
-# ── Ollama LLaVA ──────────────────────────────────────────────────────────────
-
-def describe_with_llava(img: np.ndarray) -> str:
-    """
-    Send the full-colour page image to LLaVA via Ollama.
-    Encodes as base64 PNG — Ollama's Python client accepts base64 strings
-    in the `images` field of the message dict.
-
-    Prompt is tuned for financial/technical documents:
-      - Flow diagrams → describe nodes, arrows, relationships
-      - Mind maps     → describe hierarchy and branch labels
-      - Charts        → type, title, axes, key values
-      - Mixed pages   → describe all sections
-    """
-    _, buf = cv2.imencode(".png", img)
-    b64    = base64.b64encode(buf.tobytes()).decode("utf-8")
-
-    prompt = (
-        "You are analysing a page from a technical or financial document. "
-        "Describe the content in clean, structured Markdown:\n"
-        "- Flow diagram / mind map: describe each node, its connections, "
-        "  and the overall hierarchy or flow direction.\n"
-        "- Chart or graph: state type, title, axis labels, legend, "
-        "  and key data points or trends.\n"
-        "- Table without borders: extract as a Markdown pipe table.\n"
-        "- Mixed content: cover each section clearly.\n"
-        "Output Markdown only. No preamble or commentary."
+    data = pytesseract.image_to_data(
+        pil_img, lang=lang, config=config, output_type=Output.DICT
     )
 
-    try:
-        resp = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "user", "content": prompt, "images": [b64]}]
-        )
-        print("-" * 80)
-        print()
-        print("LLaVA response:", resp["message"]["content"].strip())  # Debug log for LLaVA output
-        print()
-        print("-" * 80)
-        return resp["message"]["content"].strip()
-    except Exception as e:
-        log.warning(f"    Ollama error: {e}")
-        return "> ⚠️ *Diagram/image — Ollama unavailable. Run `ollama serve` and retry.*"
+    # Group words into lines by (block_num, par_num, line_num)
+    line_map: dict[tuple, dict] = {}
+    for i in range(len(data["text"])):
+        word = data["text"][i].strip()
+        conf = float(data["conf"][i])
+        if not word or conf < 0:
+            continue
+
+        key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+        lx = data["left"][i]
+        ly = data["top"][i]
+        lw = data["width"][i]
+        lh = data["height"][i]
+
+        if key not in line_map:
+            line_map[key] = {
+                "words": [], "confs": [],
+                "x0": lx, "y0": ly, "x1": lx + lw, "y1": ly + lh
+            }
+        line_map[key]["words"].append(word)
+        line_map[key]["confs"].append(conf)
+        line_map[key]["x0"] = min(line_map[key]["x0"], lx)
+        line_map[key]["y0"] = min(line_map[key]["y0"], ly)
+        line_map[key]["x1"] = max(line_map[key]["x1"], lx + lw)
+        line_map[key]["y1"] = max(line_map[key]["y1"], ly + lh)
+
+    # Now group lines into paragraphs by (block_num, par_num)
+    # This gives natural paragraph breaks instead of one line at a time
+    para_map: dict[tuple, dict] = {}
+    for (blk, par, ln), line in sorted(line_map.items()):
+        key = (blk, par)
+        line_text = " ".join(line["words"])
+        avg_conf = sum(line["confs"]) / len(line["confs"])
+
+        if key not in para_map:
+            para_map[key] = {
+                "lines": [], "confs": [],
+                "x0": line["x0"], "y0": line["y0"],
+                "x1": line["x1"], "y1": line["y1"]
+            }
+        para_map[key]["lines"].append(line_text)
+        para_map[key]["confs"].append(avg_conf)
+        para_map[key]["x0"] = min(para_map[key]["x0"], line["x0"])
+        para_map[key]["y0"] = min(para_map[key]["y0"], line["y0"])
+        para_map[key]["x1"] = max(para_map[key]["x1"], line["x1"])
+        para_map[key]["y1"] = max(para_map[key]["y1"], line["y1"])
+
+    results = []
+    for para in para_map.values():
+        x0 = round(para["x0"] / scale, 1)
+        y0 = round(para["y0"] / scale, 1)
+        x1 = round(para["x1"] / scale, 1)
+        y1 = round(para["y1"] / scale, 1)
+        avg_conf = round(sum(para["confs"]) / len(para["confs"]), 1)
+        results.append({
+            "type": "text",
+            "source": "ocr",
+            "text": "\n".join(para["lines"]),
+            "confidence": avg_conf,
+            "bbox": {"x0": x0, "y0": y0, "x1": x1, "y1": y1},
+        })
+
+    # Sort top-to-bottom, left-to-right
+    results.sort(key=lambda b: (b["bbox"]["y0"], b["bbox"]["x0"]))
+    return results
 
 
-# ── Page processor ────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# 5. Image block extraction (fitz)
+# ──────────────────────────────────────────────
 
-def process_page(page: fitz.Page, page_num: int) -> str:
+def extract_image_blocks(page: fitz.Page) -> list[dict]:
     """
-    Full pipeline for one page:
-      1. Extract native text via PyMuPDF (instant, no OCR).
-      2. Render page to BGR image.
-      3. Route:
-           short native text → LLaVA  (diagram / image / scan)
-           long  native text → Tesseract (text page, optionally table)
-      4. Log time taken for each stage and the routing decision.
-
-    Returns the Markdown string for this page.
+    Find all embedded image blocks on the page.
+    Returns metadata only (bbox, size) — images are not saved to disk.
     """
-    page_start = time.perf_counter()
-    log.info(f"── Page {page_num} ──────────────────────────")
+    results = []
+    for block in page.get_text("dict")["blocks"]:
+        if block["type"] != 1:
+            continue
+        x0, y0, x1, y1 = block["bbox"]
+        results.append({
+            "type": "image",
+            "source": "embedded",
+            "bbox": {"x0": round(x0, 1), "y0": round(y0, 1),
+                     "x1": round(x1, 1), "y1": round(y1, 1)},
+            "width_pt":  round(x1 - x0, 1),
+            "height_pt": round(y1 - y0, 1),
+        })
+    return results
 
-    # Stage 1: native text extraction (PyMuPDF, ~instant)
-    t0 = time.perf_counter()
-    native_text = get_native_text(page)
-    log.info(f"  [native text]  {len(native_text)} chars  ({_hms(time.perf_counter()-t0)})")
 
-    # Stage 2: render to image
-    t0 = time.perf_counter()
-    img_bgr = render_page(page)
-    log.info(f"  [render]       {img_bgr.shape[1]}×{img_bgr.shape[0]}px  ({_hms(time.perf_counter()-t0)})")
+# ──────────────────────────────────────────────
+# 6. Process single page
+# ──────────────────────────────────────────────
 
-    parts = [f"## Page {page_num}\n"]
+def process_page(
+    page: fitz.Page,
+    page_no: int,
+    force_ocr: bool = False,
+    dpi: int = 300,
+    lang: str = "eng",
+    oem: int = 3,
+    psm: int = 1,
+) -> dict:
+    """
+    Process one PDF page. Decides strategy, extracts text + image blocks.
+    Returns a structured dict ready for Markdown or JSON output.
+    """
+    use_ocr = force_ocr or not has_native_text(page)
+    strategy = "ocr" if use_ocr else "native"
 
-    # Stage 3: route
-    if should_use_llava(native_text):
-        log.info(f"  [route]        → LLaVA  (native text ≤ {NATIVE_TEXT_THRESHOLD} chars)")
-        t0 = time.perf_counter()
-        parts.append(describe_with_llava(img_bgr))
-        log.info(f"  [llava]        done  ({_hms(time.perf_counter()-t0)})")
-
+    if use_ocr:
+        text_blocks = extract_ocr_text(page, dpi=dpi, lang=lang, oem=oem, psm=psm)
     else:
-        preprocessed = preprocess(img_bgr)
+        text_blocks = extract_native_text(page)
 
-        if has_table(preprocessed):
-            log.info(f"  [route]        → Tesseract TABLE")
-            t0 = time.perf_counter()
-            parts.append(extract_table(preprocessed))
-            log.info(f"  [tesseract]    table done  ({_hms(time.perf_counter()-t0)})")
-        else:
-            log.info(f"  [route]        → Tesseract TEXT")
-            t0 = time.perf_counter()
-            parts.append(extract_text(preprocessed))
-            log.info(f"  [tesseract]    text done  ({_hms(time.perf_counter()-t0)})")
+    image_blocks = extract_image_blocks(page)
 
-    elapsed = time.perf_counter() - page_start
-    log.info(f"  [page total]   {_hms(elapsed)}")
+    # Merge and sort all blocks top-to-bottom
+    all_blocks = sorted(
+        text_blocks + image_blocks,
+        key=lambda b: (b["bbox"]["y0"], b["bbox"]["x0"])
+    )
 
-    return "\n".join(parts)
+    plain_text = "\n\n".join(
+        b["text"] for b in all_blocks if b["type"] == "text" and b["text"].strip()
+    )
+
+    rect = page.rect
+    return {
+        "page": page_no,
+        "width_pt": round(rect.width, 1),
+        "height_pt": round(rect.height, 1),
+        "strategy": strategy,
+        "image_count": len(image_blocks),
+        "text_block_count": len(text_blocks),
+        "plain_text": plain_text,
+        "blocks": all_blocks,
+    }
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────
+# 7. Process full PDF
+# ──────────────────────────────────────────────
 
-def convert(pdf_path: str, output_dir: str = "output") -> Path:
-    """
-    Convert a full PDF to a single Markdown file.
-    Logs per-page and total timing for every stage.
-    """
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def process_pdf(
+    pdf_path: str,
+    force_ocr: bool = False,
+    dpi: int = 300,
+    lang: str = "eng",
+    oem: int = 3,
+    psm: int = 1,
+    password: str = "",
+    tesseract_path: Optional[str] = None,
+) -> list[dict]:
+    """Open and process every page. Returns list of page result dicts."""
+    setup_tesseract(tesseract_path)
 
-    total_start = time.perf_counter()
-    log.info(f"Starting conversion: {pdf_path}")
-    log.info(f"Config: DPI={DPI}  lang={LANG}  model={OLLAMA_MODEL}  threshold={NATIVE_TEXT_THRESHOLD}")
+    doc = fitz.open(pdf_path)
+    if password:
+        doc.authenticate(password)
 
-    doc = load_pdf(pdf_path)
-    log.info(f"Loaded PDF: {len(doc)} page(s)")
-
-    md_pages = []
-    for i, page in enumerate(doc, start=1):
-        md_pages.append(process_page(page, i))
+    pages = []
+    for i in range(doc.page_count):
+        pg = doc[i]
+        print(f"  Page {i+1}/{doc.page_count} ...", end=" ")
+        result = process_page(pg, i + 1, force_ocr=force_ocr,
+                              dpi=dpi, lang=lang, oem=oem, psm=psm)
+        print(f"strategy={result['strategy']}  "
+              f"text_blocks={result['text_block_count']}  "
+              f"images={result['image_count']}")
+        pages.append(result)
 
     doc.close()
+    return pages
 
-    # Assemble and save
-    t0       = time.perf_counter()
-    markdown = "\n\n---\n\n".join(md_pages)
-    out_file = out_dir / (Path(pdf_path).stem + ".md")
-    out_file.write_text(markdown, encoding="utf-8")
-    log.info(f"Saved → {out_file}  ({len(markdown):,} chars, write: {_hms(time.perf_counter()-t0)})")
 
-    total = time.perf_counter() - total_start
-    log.info(f"══ Total time: {_hms(total)} for {len(md_pages)} page(s) "
-             f"(avg {_hms(total/max(len(md_pages),1))}/page) ══")
+# ──────────────────────────────────────────────
+# 8. Markdown output
+# ──────────────────────────────────────────────
 
-    return out_file
+def to_markdown(pages: list[dict], pdf_path: str) -> str:
+    """
+    Clean Markdown output:
+      - Text printed as plain paragraphs
+      - Image blocks noted as inline placeholders with their position
+    """
+    lines = [f"# {Path(pdf_path).name}\n"]
+
+    for page in pages:
+        lines.append(f"## Page {page['page']}\n")
+        lines.append(
+            f"> strategy: `{page['strategy']}` | "
+            f"images: {page['image_count']} | "
+            f"text blocks: {page['text_block_count']}\n"
+        )
+
+        for block in page["blocks"]:
+            if block["type"] == "text":
+                lines.append(block["text"])
+                lines.append("")
+            elif block["type"] == "image":
+                bb = block["bbox"]
+                lines.append(
+                    f"*[Image — {block['width_pt']} × {block['height_pt']} pt"
+                    f" at ({bb['x0']}, {bb['y0']})]*"
+                )
+                lines.append("")
+
+        lines.append("---\n")
+
+    return "\n".join(lines)
+
+
+# ──────────────────────────────────────────────
+# 9. JSON output
+# ──────────────────────────────────────────────
+
+def to_json(pages: list[dict], output_path: str) -> None:
+    """
+    Save full structured data to JSON.
+
+    JSON structure per page:
+      page             : page number (1-based)
+      width_pt         : page width in PDF points
+      height_pt        : page height in PDF points
+      strategy         : "native" or "ocr"
+      image_count      : number of embedded image blocks found
+      text_block_count : number of text blocks extracted
+      plain_text       : all page text joined — easy to read / feed to NLP
+      blocks[]         : all content blocks sorted top-to-bottom
+        text block:
+          type         : "text"
+          source       : "native" (fitz) | "ocr" (Tesseract)
+          text         : extracted paragraph text
+          confidence   : average OCR confidence 0-100 (ocr blocks only)
+          bbox         : {x0, y0, x1, y1} in PDF points
+        image block:
+          type         : "image"
+          source       : "embedded"
+          bbox         : {x0, y0, x1, y1} in PDF points
+          width_pt     : image width in PDF points
+          height_pt    : image height in PDF points
+    """
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(pages, f, indent=2, ensure_ascii=False)
+    print(f"  JSON → {output_path}")
+
+
+# ──────────────────────────────────────────────
+# 10. CLI
+# ──────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="PDF OCR → Markdown + JSON  (PyMuPDF + Tesseract)"
+    )
+    parser.add_argument("pdf", help="Input PDF path")
+    parser.add_argument("-o", "--output", help="Output .md path (default: <name>.md)")
+    parser.add_argument("--json", help="Output .json path (default: <name>.json)")
+    parser.add_argument("--force-ocr", action="store_true",
+                        help="Always use Tesseract on every page")
+    parser.add_argument("--dpi", type=int, default=300,
+                        help="Render DPI for OCR pages (default: 300)")
+    parser.add_argument("--lang", default="eng",
+                        help="Tesseract language(s), e.g. eng+hin (default: eng)")
+    parser.add_argument("--oem", type=int, default=3,
+                        help="Tesseract OEM 0-3 (default: 3)")
+    parser.add_argument("--psm", type=int, default=1,
+                        help="Tesseract PSM 0-13 (default: 1 = auto+OSD)")
+    parser.add_argument("--password", default="",
+                        help="PDF password if encrypted")
+    parser.add_argument("--tesseract-path", default=None,
+                        help="Local path to tesseract binary")
+    args = parser.parse_args()
+
+    if not os.path.isfile(args.pdf):
+        print(f"[error] File not found: {args.pdf}")
+        return
+
+    stem     = Path(args.pdf).stem
+    out_md   = args.output or f"{stem}.md"
+    out_json = args.json   or f"{stem}.json"
+
+    print(f"\nInput  : {args.pdf}")
+    print(f"Output : {out_md}  +  {out_json}\n")
+
+    pages = process_pdf(
+        pdf_path=args.pdf,
+        force_ocr=args.force_ocr,
+        dpi=args.dpi,
+        lang=args.lang,
+        oem=args.oem,
+        psm=args.psm,
+        password=args.password,
+        tesseract_path=args.tesseract_path,
+    )
+
+    md = to_markdown(pages, args.pdf)
+    with open(out_md, "w", encoding="utf-8") as f:
+        f.write(md)
+    print(f"  MD   → {out_md}")
+
+    to_json(pages, out_json)
+    print(f"\nDone — {len(pages)} page(s) processed.\n")
 
 
 if __name__ == "__main__":
-    import argparse
-    p = argparse.ArgumentParser(description="PDF → Markdown  (Tesseract + LLaVA)")
-    p.add_argument("pdf",            help="Input PDF path")
-    p.add_argument("--output", "-o", default="output", help="Output directory")
-    args = p.parse_args()
-    convert(args.pdf, args.output)
+    main()
