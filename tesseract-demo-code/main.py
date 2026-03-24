@@ -17,6 +17,10 @@ Tesseract must be installed locally:
     Linux  : sudo apt install tesseract-ocr
     macOS  : brew install tesseract
     Windows: https://github.com/UB-Mannheim/tesseract/wiki
+
+
+
+    This is Gaurav Lodha File
 """
 
 import os
